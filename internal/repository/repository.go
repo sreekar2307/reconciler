@@ -2,15 +2,10 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readconcern"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"github.com/sreekar2307/reconciler/internal/errors/db"
 	"github.com/sreekar2307/reconciler/internal/model"
+	"github.com/sreekar2307/reconciler/pkg/db/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
 	"time"
 )
 
@@ -23,10 +18,10 @@ type Repository interface {
 }
 
 type repository struct {
-	client              *mongo.Client
-	reconDatabase       *mongo.Database
-	incomingCollections *mongo.Collection
-	outgoingCollections *mongo.Collection
+	client              mongodb.Client
+	reconDatabase       mongodb.Database
+	incomingCollections mongodb.Collection
+	outgoingCollections mongodb.Collection
 }
 
 const (
@@ -34,7 +29,7 @@ const (
 	outgoingTransactionsCollection = "outgoing_transactions"
 )
 
-func NewRepository(client *mongo.Client, reconDatabase string) Repository {
+func NewRepository(client mongodb.Client, reconDatabase string) Repository {
 	reconDb := client.Database(reconDatabase)
 	return &repository{
 		client:              client,
@@ -49,18 +44,19 @@ func (r repository) FindUnReconciledIncomingTransactions(ctx context.Context) ([
 		"reconciled": false,
 		"timestamp":  bson.M{"$lt": time.Now().Add(-10 * time.Minute)},
 	}
-	cursor, err := r.incomingCollections.Find(ctx, filter)
+	results, err := r.incomingCollections.Find(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find unreconciled incoming transactions: %w", err)
 	}
-	defer func() {
-		_ = cursor.Close(ctx)
-	}()
-	var transactions []*model.Transaction
-	if err := cursor.All(ctx, &transactions); err != nil {
-		return nil, fmt.Errorf("failed to decode unreconciled incoming transactions: %w", err)
+	txns := make([]*model.Transaction, len(results))
+	for i, result := range results {
+		txn := new(model.Transaction)
+		txns[i] = txn
+		if err := bson.Unmarshal(result, txns[i]); err != nil {
+			return nil, fmt.Errorf("failed to decode incoming transaction: %w", err)
+		}
 	}
-	return transactions, nil
+	return txns, nil
 }
 
 func (r repository) FindUnReconciledOutgoingTransactions(ctx context.Context) ([]*model.Transaction, error) {
@@ -68,59 +64,62 @@ func (r repository) FindUnReconciledOutgoingTransactions(ctx context.Context) ([
 		"reconciled": false,
 		"timestamp":  bson.M{"$lt": time.Now().Add(-10 * time.Minute)},
 	}
-	cursor, err := r.outgoingCollections.Find(ctx, filter)
+	results, err := r.outgoingCollections.Find(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find unreconciled outgoing transactions: %w", err)
+		return nil, fmt.Errorf("failed to find unreconciled incoming transactions: %w", err)
 	}
-	defer func() {
-		_ = cursor.Close(ctx)
-	}()
-	var transactions []*model.Transaction
-	if err := cursor.All(ctx, &transactions); err != nil {
-		return nil, fmt.Errorf("failed to decode unreconciled outgoing transactions: %w", err)
+	txns := make([]*model.Transaction, len(results))
+	for i, result := range results {
+		txn := new(model.Transaction)
+		txns[i] = txn
+		if err := bson.Unmarshal(result, txns[i]); err != nil {
+			return nil, fmt.Errorf("failed to decode incoming transaction: %w", err)
+		}
 	}
-	return transactions, nil
+	return txns, nil
 }
 
 func (r repository) FindOutgoingTransactionByID(ctx context.Context, txnID string) (*model.Transaction, error) {
 	outTxn := new(model.Transaction)
-	if err := r.outgoingCollections.FindOne(ctx, bson.M{"txn_id": txnID}).Decode(&outTxn); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, db.ErrRecordNotFound
-		}
+	result, err := r.outgoingCollections.FindOne(ctx, bson.M{"txn_id": txnID})
+	if err != nil {
 		return nil, fmt.Errorf("failed to find outgoing transaction by ID %s: %w", txnID, err)
+	}
+	if err := bson.Unmarshal(result, outTxn); err != nil {
+		return nil, fmt.Errorf("failed to decode outgoing transaction: %w", err)
 	}
 	return outTxn, nil
 }
 
 func (r repository) FindIncomingTransactionByID(ctx context.Context, txnID string) (*model.Transaction, error) {
-	outTxn := new(model.Transaction)
-	if err := r.incomingCollections.FindOne(ctx, bson.M{"txn_id": txnID}).Decode(&outTxn); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, db.ErrRecordNotFound
-		}
+	inTxn := new(model.Transaction)
+	result, err := r.incomingCollections.FindOne(ctx, bson.M{"txn_id": txnID})
+	if err != nil {
 		return nil, fmt.Errorf("failed to find incoming transaction by ID %s: %w", txnID, err)
 	}
-	return outTxn, nil
+	if err := bson.Unmarshal(result, inTxn); err != nil {
+		return nil, fmt.Errorf("failed to decode incoming transaction: %w", err)
+	}
+	return inTxn, nil
 }
 
 func (r repository) SetReconciled(ctx context.Context, txnID string) error {
-	session, err := r.client.StartSession()
+	session, err := r.client.StartSession(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start session: %w", err)
 	}
-	defer session.EndSession(ctx)
-	_, err = session.WithTransaction(ctx, func(ctx mongo.SessionContext) (any, error) {
-		if _, err := r.incomingCollections.UpdateOne(ctx, bson.M{"txn_id": txnID}, bson.M{"$set": bson.M{"reconciled": true}}); err != nil {
+	defer session.End(ctx)
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+		if err := r.incomingCollections.UpdateOne(ctx, bson.M{"txn_id": txnID}, bson.M{"$set": bson.M{"reconciled": true}}); err != nil {
 			return nil, fmt.Errorf("failed to update incoming transaction %s as reconciled: %w", txnID, err)
 		}
-		if _, err := r.outgoingCollections.UpdateOne(ctx, bson.M{"txn_id": txnID}, bson.M{"$set": bson.M{"reconciled": true}}); err != nil {
+		if err := r.outgoingCollections.UpdateOne(ctx, bson.M{"txn_id": txnID}, bson.M{"$set": bson.M{"reconciled": true}}); err != nil {
 			return nil, fmt.Errorf("failed to update outgoing transaction %s as reconciled: %w", txnID, err)
 		}
 		return nil, nil
-	}, &options.TransactionOptions{
-		ReadConcern:  readconcern.Majority(),
-		WriteConcern: writeconcern.Majority(),
+	}, &mongodb.TransactionOptions{
+		ReadConcern:  "majority",
+		WriteConcern: "majority",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to set reconciled for transaction %s: %w", txnID, err)

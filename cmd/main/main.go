@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"flag"
-	"os"
-	"os/signal"
 	"github.com/sreekar2307/reconciler/cmd"
 	"github.com/sreekar2307/reconciler/cmd/migrate"
 	"github.com/sreekar2307/reconciler/cmd/recon"
 	"github.com/sreekar2307/reconciler/cmd/seed"
+	"os"
+	"os/signal"
 	"syscall"
 )
 

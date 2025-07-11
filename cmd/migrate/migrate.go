@@ -3,10 +3,9 @@ package migrate
 import (
 	"context"
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"github.com/sreekar2307/reconciler/cmd"
+	"github.com/sreekar2307/reconciler/pkg/db/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func Run(ctx context.Context, deps *cmd.Deps) error {
@@ -28,7 +27,7 @@ func Run(ctx context.Context, deps *cmd.Deps) error {
 
 }
 
-func createCollectionWithValidation(ctx context.Context, db *mongo.Database, name string) error {
+func createCollectionWithValidation(ctx context.Context, db mongodb.Database, name string) error {
 	command := bson.D{
 		{"create", name},
 		{"validator", bson.M{
@@ -43,14 +42,14 @@ func createCollectionWithValidation(ctx context.Context, db *mongo.Database, nam
 			},
 		}},
 	}
-	return db.RunCommand(ctx, command).Err()
+	return db.RunCommand(ctx, command)
 }
 
-func createTxnIDIndex(ctx context.Context, db *mongo.Database, collName string) error {
-	indexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "txn_id", Value: 1}},
-		Options: options.Index().SetUnique(true),
+func createTxnIDIndex(ctx context.Context, db mongodb.Database, collName string) error {
+	t := true
+	indexModel := mongodb.Index{
+		Keys: bson.D{{Key: "txn_id", Value: 1}},
+		Opts: &mongodb.IndexOptions{Unique: &t},
 	}
-	_, err := db.Collection(collName).Indexes().CreateOne(ctx, indexModel)
-	return err
+	return db.Collection(collName).CreateIndex(ctx, indexModel)
 }

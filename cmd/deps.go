@@ -2,14 +2,13 @@ package cmd
 
 import (
 	"context"
-	"go.mongodb.org/mongo-driver/mongo"
 	"github.com/sreekar2307/reconciler/internal/recon"
 	"github.com/sreekar2307/reconciler/internal/repository"
 	"github.com/sreekar2307/reconciler/pkg/db/mongodb"
 )
 
 type Deps struct {
-	Client        *mongo.Client
+	Client        mongodb.Client
 	ReconDatabase string
 	Reconciler    recon.Reconcile
 	Repository    repository.Repository
@@ -20,7 +19,7 @@ func NewDeps(
 	dbName,
 	mongoURI string,
 ) (*Deps, error) {
-	client, err := mongodb.Client(ctx, mongoURI)
+	client, err := mongodb.NewClient(ctx, mongoURI)
 	if err != nil {
 		return nil, err
 	}
